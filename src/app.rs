@@ -100,6 +100,8 @@ pub struct App {
     pub history_logged_for: Option<PathBuf>,
     /// (playlist_index, track_index) of the currently playing track
     pub playing_track: Option<(usize, usize)>,
+    /// Tick counter driving the visualizer animation (increments only while playing and not paused).
+    pub viz_tick: u64,
 }
 
 impl App {
@@ -129,6 +131,7 @@ impl App {
             play_elapsed: std::time::Duration::ZERO,
             history_logged_for: None,
             playing_track: None,
+            viz_tick: 0,
         }
     }
 
@@ -291,6 +294,12 @@ impl App {
     pub fn add_selected_to_playlist(&mut self) {
         if let Some(path) = self.browser.selected_path().cloned() {
             if is_audio(&path) {
+                let playlist = self.current_playlist_mut();
+                if playlist.tracks.iter().any(|t| t.path == path) {
+                    let pname = playlist.name.clone();
+                    self.set_status(format!("Already in {}", pname));
+                    return;
+                }
                 let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
                 self.current_playlist_mut().tracks.push(Track { name, path });
                 let pname = self.current_playlist().name.clone();

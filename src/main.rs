@@ -46,6 +46,9 @@ fn main() -> io::Result<()> {
 
         app.poll_download();
         app.tick_status();
+        if player.now_playing.is_some() && !player.paused {
+            app.viz_tick = app.viz_tick.wrapping_add(delta.as_millis() as u64);
+        }
 
         if player.now_playing.is_some() && player.is_finished() {
             if let Some(path) = app.advance_track(1) {

@@ -202,6 +202,22 @@ fn draw_player_bar(frame: &mut Frame, app: &App, player: &Player, area: Rect) {
         RepeatMode::One => Span::styled(" ⟳¹", Style::default().fg(Color::Yellow)),
     };
 
+    let viz_str = {
+        let blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        let s: String = if player.now_playing.is_some() && !player.paused {
+            let t = app.viz_tick as f64;
+            (0..5)
+                .map(|i| {
+                    let v = (t * 0.0018 + i as f64 * 1.1).sin();
+                    blocks[((v + 1.0) / 2.0 * 7.0) as usize]
+                })
+                .collect()
+        } else {
+            std::iter::repeat(blocks[0]).take(5).collect()
+        };
+        format!(" {}", s)
+    };
+
     let line = Line::from(vec![
         Span::styled(format!(" {} ", pause_str), Style::default().fg(Color::Cyan)),
         Span::styled(
@@ -210,6 +226,7 @@ fn draw_player_bar(frame: &mut Frame, app: &App, player: &Player, area: Rect) {
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(viz_str, Style::default().fg(Color::Cyan)),
         Span::styled(time_str, Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("  vol: {}%", vol),
