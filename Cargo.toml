@@ -1,5 +1,5 @@
 [package]
-name = "cli-fi"
+name = "tui-fi"
 version = "0.1.0"
 edition = "2024"
 
@@ -13,4 +13,6 @@ walkdir = "2"
 dirs = "5"
 rand = "0.8"
 lofty = "0.22"
+mpris-server = "0.8"
+tokio = { version = "1", features = ["rt", "sync"] }
 

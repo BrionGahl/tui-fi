@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
 use crate::app::{self, App, Mode, Panel, RepeatMode, TagEditor};
@@ -263,6 +263,7 @@ fn draw_controls_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_naming_popup(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(40, 3, area);
+    frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(format!(" New playlist: {}_", app.input_buffer))
             .block(
@@ -278,6 +279,7 @@ fn draw_naming_popup(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_url_popup(frame: &mut Frame, app: &App, area: Rect) {
     let dir = app::App::download_dir();
     let popup = centered_rect(70, 5, area);
+    frame.render_widget(Clear, popup);
     let text = format!(
         " YouTube URL:\n {}_\n\n  → saves to {}",
         app.input_buffer,
@@ -298,6 +300,7 @@ fn draw_url_popup(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_history(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(60, 27, area);
+    frame.render_widget(Clear, popup);
 
     let items: Vec<ListItem> = if app.history.entries.is_empty() {
         vec![ListItem::new(Span::styled(" No history yet", Style::default().fg(Color::DarkGray)))]
@@ -327,6 +330,7 @@ fn draw_history(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_tag_editor(frame: &mut Frame, ed: &TagEditor, area: Rect) {
     let popup = centered_rect(60, 7, area);
+    frame.render_widget(Clear, popup);
     let filename = ed.path.file_name().unwrap_or_default().to_string_lossy();
 
     let lines: Vec<Line> = TagEditor::LABELS.iter().enumerate().map(|(i, label)| {

@@ -2,11 +2,15 @@ mod app;
 mod config;
 mod history;
 mod m3u;
+mod mpris;
 mod player;
 mod playlist;
 mod ui;
+mod utils;
 
 use std::io;
+use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use crossterm::{
@@ -30,6 +34,11 @@ fn main() -> io::Result<()> {
     let cfg = config::Config::load();
     let mut player = Player::new(cfg.volume).expect("Failed to init audio");
     let mut last_tick = Instant::now();
+
+    let (mpris_cmd_tx, mpris_cmd_rx) = mpsc::channel::<mpris::Cmd>();
+    let mpris = mpris::MprisHandle::spawn(mpris_cmd_tx);
+    let mut last_mpris_path: Option<PathBuf> = None;
+    let mut last_mpris_paused = false;
 
     loop {
         terminal.draw(|f| ui::draw(f, &app, &player))?;
@@ -55,6 +64,28 @@ fn main() -> io::Result<()> {
                 player.play(path);
             } else {
                 player.on_track_end();
+            }
+        }
+
+        // Handle commands from the taskbar/media keys via MPRIS.
+        if let Some(ref handle) = mpris {
+            while let Ok(cmd) = mpris_cmd_rx.try_recv() {
+                match cmd {
+                    mpris::Cmd::Play => { if player.paused { player.toggle_pause(); } }
+                    mpris::Cmd::Pause => { if !player.paused && player.now_playing.is_some() { player.toggle_pause(); } }
+                    mpris::Cmd::Toggle => player.toggle_pause(),
+                    mpris::Cmd::Stop => player.stop(),
+                    mpris::Cmd::Next => { if let Some(path) = app.advance_track(1) { player.play(path); } }
+                    mpris::Cmd::Previous => { if let Some(path) = app.advance_track(-1) { player.play(path); } }
+                }
+            }
+            // Push state to MPRIS whenever track or pause state changes.
+            let path_changed = player.now_playing != last_mpris_path;
+            let pause_changed = player.now_playing.is_some() && player.paused != last_mpris_paused;
+            if path_changed || pause_changed {
+                handle.update(&player);
+                last_mpris_path = player.now_playing.clone();
+                last_mpris_paused = player.paused;
             }
         }
 

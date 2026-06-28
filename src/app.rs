@@ -98,6 +98,8 @@ pub struct App {
     pub play_elapsed: std::time::Duration,
     /// Path of the track already logged to history this play session.
     pub history_logged_for: Option<PathBuf>,
+    /// Path that was playing on the previous tick (used to detect track changes).
+    pub last_playing: Option<PathBuf>,
     /// (playlist_index, track_index) of the currently playing track
     pub playing_track: Option<(usize, usize)>,
     /// Tick counter driving the visualizer animation (increments only while playing and not paused).
@@ -130,6 +132,7 @@ impl App {
             history_selected: 0,
             play_elapsed: std::time::Duration::ZERO,
             history_logged_for: None,
+            last_playing: None,
             playing_track: None,
             viz_tick: 0,
         }
@@ -242,15 +245,15 @@ impl App {
         let Some(path) = now_playing else {
             self.play_elapsed = std::time::Duration::ZERO;
             self.history_logged_for = None;
+            self.last_playing = None;
             return;
         };
 
         // reset accumulator when track changes
-        if self.history_logged_for.as_ref() != Some(path)
-            && self.play_elapsed > std::time::Duration::ZERO
-        {
+        if self.last_playing.as_ref() != Some(path) {
             self.play_elapsed = std::time::Duration::ZERO;
         }
+        self.last_playing = Some(path.clone());
 
         if !paused {
             self.play_elapsed += delta;
@@ -331,7 +334,7 @@ impl App {
     }
 
     pub fn download_dir() -> PathBuf {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join("Music/cli-fi")
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join("Music/tui-fi")
     }
 
     pub fn import_m3u(&mut self, path: &PathBuf) -> Option<usize> {

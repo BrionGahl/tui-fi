@@ -21,7 +21,7 @@ impl Playlist {
     }
 
     fn data_dir() -> PathBuf {
-        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("cli-fi/playlists")
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("tui-fi/playlists")
     }
 
     fn path_for(name: &str) -> PathBuf {
