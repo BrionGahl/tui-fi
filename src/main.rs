@@ -43,10 +43,10 @@ fn main() -> io::Result<()> {
     loop {
         terminal.draw(|f| ui::draw(f, &app, &player))?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(&mut app, &mut player, key.code, key.modifiers);
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            handle_key(&mut app, &mut player, key.code, key.modifiers);
         }
 
         let delta = last_tick.elapsed();
@@ -63,7 +63,7 @@ fn main() -> io::Result<()> {
             if let Some(path) = app.advance_track(1) {
                 player.play(path);
             } else {
-                player.on_track_end();
+                player.stop();
             }
         }
 
@@ -181,10 +181,10 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                     app.mode = Mode::Normal;
                 }
                 KeyCode::Tab => {
-                    ed.active = (ed.active + 1) % 3;
+                    ed.active = (ed.active + 1) % app::TagEditor::LABELS.len();
                 }
                 KeyCode::BackTab => {
-                    ed.active = ed.active.checked_sub(1).unwrap_or(2);
+                    ed.active = ed.active.checked_sub(1).unwrap_or(app::TagEditor::LABELS.len() - 1);
                 }
                 KeyCode::Backspace => {
                     ed.fields[ed.active].pop();
@@ -307,6 +307,14 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
     }
 }
 
+fn open_tag_editor_for(app: &mut App, player: &Player, path: PathBuf) {
+    let info = player.now_playing.as_ref()
+        .filter(|p| *p == &path)
+        .and(player.track_info.as_ref());
+    let tags = player::read_tags(&path);
+    app.open_tag_editor(path, tags.as_ref().or(info));
+}
+
 fn handle_browser_key(app: &mut App, player: &mut Player, key: KeyCode) {
     match key {
         KeyCode::Down | KeyCode::Char('j') => app.browser_nav(1),
@@ -336,15 +344,10 @@ fn handle_browser_key(app: &mut App, player: &mut Player, key: KeyCode) {
             app.add_selected_to_playlist();
         }
         KeyCode::Char('e') => {
-            if let Some(path) = app.browser.selected_path().cloned() {
-                if crate::app::is_audio(&path) {
-                    let info = player.now_playing.as_ref()
-                        .filter(|p| *p == &path)
-                        .and_then(|_| player.track_info.as_ref());
-                    // read tags fresh from file for the editor
-                    let tags = player::read_file_tags(&path);
-                    app.open_tag_editor(path, tags.as_ref().or(info));
-                }
+            if let Some(path) = app.browser.selected_path().cloned()
+                && crate::app::is_audio(&path)
+            {
+                open_tag_editor_for(app, player, path);
             }
         }
         _ => {}
@@ -378,11 +381,7 @@ fn handle_playlist_key(app: &mut App, player: &mut Player, key: KeyCode) {
             let path = app.current_playlist().tracks.get(app.current_playlist().selected)
                 .map(|t| t.path.clone());
             if let Some(path) = path {
-                let info = player.now_playing.as_ref()
-                    .filter(|p| *p == &path)
-                    .and_then(|_| player.track_info.as_ref());
-                let tags = player::read_file_tags(&path);
-                app.open_tag_editor(path, tags.as_ref().or(info));
+                open_tag_editor_for(app, player, path);
             }
         }
         _ => {}

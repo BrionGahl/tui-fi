@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use lofty::config::WriteOptions;
@@ -70,14 +70,15 @@ impl Player {
     }
 
     pub fn volume_up(&mut self) {
-        self.volume = (self.volume + 0.05).min(2.0);
-        if let Some(sink) = &self.sink {
-            sink.set_volume(self.volume);
-        }
+        self.set_volume((self.volume + 0.05).min(2.0));
     }
 
     pub fn volume_down(&mut self) {
-        self.volume = (self.volume - 0.05).max(0.0);
+        self.set_volume((self.volume - 0.05).max(0.0));
+    }
+
+    pub fn set_volume(&mut self, volume: f32) {
+        self.volume = volume;
         if let Some(sink) = &self.sink {
             sink.set_volume(self.volume);
         }
@@ -92,22 +93,14 @@ impl Player {
     }
 
     pub fn reload_track_info(&mut self) {
-        if let Some(path) = self.now_playing.clone() {
+        if let Some(path) = &self.now_playing {
             self.track_info = read_tags(&path);
         }
-    }
-
-    pub fn on_track_end(&mut self) {
-        self.sink = None;
-        self.now_playing = None;
-        self.track_info = None;
-        self.total_duration = None;
-        self.paused = false;
     }
 }
 
 /// Write title/artist/album to the file's tags. Returns true on success.
-pub fn save_tags(path: &PathBuf, title: &str, artist: &str, album: &str) -> bool {
+pub fn save_tags(path: &Path, title: &str, artist: &str, album: &str) -> bool {
     let Ok(mut tagged) = Probe::open(path).and_then(|p| p.read()) else { return false };
 
     if tagged.primary_tag().is_none() {
@@ -127,11 +120,7 @@ pub fn save_tags(path: &PathBuf, title: &str, artist: &str, album: &str) -> bool
     tag.save_to_path(path, WriteOptions::default()).is_ok()
 }
 
-pub fn read_file_tags(path: &PathBuf) -> Option<TrackInfo> {
-    read_tags(path)
-}
-
-fn read_tags(path: &PathBuf) -> Option<TrackInfo> {
+pub fn read_tags(path: &Path) -> Option<TrackInfo> {
     let tagged = Probe::open(path).ok()?.read().ok()?;
     let tag = tagged.primary_tag().or_else(|| tagged.first_tag())?;
     Some(TrackInfo {

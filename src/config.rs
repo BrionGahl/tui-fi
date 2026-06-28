@@ -9,7 +9,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { volume: 1.0 }
+        Self { volume: 0.75 }
     }
 }
 

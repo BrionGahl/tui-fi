@@ -1,3 +1,4 @@
+use crate::utils::{save};
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
@@ -28,11 +29,8 @@ impl Playlist {
         Self::data_dir().join(format!("{}.json", name))
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        let dir = Self::data_dir();
-        std::fs::create_dir_all(&dir)?;
-        let json = serde_json::to_string_pretty(self).unwrap();
-        std::fs::write(Self::path_for(&self.name), json)
+    pub fn save(&self) {
+        save(&self, &Self::path_for(&self.name));
     }
 
     pub fn load_all() -> Vec<Self> {

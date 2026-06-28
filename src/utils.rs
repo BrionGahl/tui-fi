@@ -1,6 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+
+pub fn display_name(path: &Path) -> String {
+    path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+}
 
 pub fn save<T: Serialize>(value: &T, path: &PathBuf) {
     if let Some(dir) = path.parent() {

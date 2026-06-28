@@ -4,6 +4,7 @@ use std::time::Instant;
 use crate::history::History;
 use crate::player::TrackInfo;
 use crate::playlist::{Playlist, Track};
+use crate::utils::display_name;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Panel {
@@ -22,12 +23,13 @@ pub enum Mode {
 
 pub struct TagEditor {
     pub path: PathBuf,
-    pub fields: [String; 3], // [title, artist, album]
+    pub fields: [String; TagEditor::COUNT], // [title, artist, album]
     pub active: usize,
 }
 
 impl TagEditor {
-    pub const LABELS: [&'static str; 3] = ["Title", "Artist", "Album"];
+    const COUNT: usize = 3;
+    pub const LABELS: [&'static str; Self::COUNT] = ["Title", "Artist", "Album"];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -55,21 +57,23 @@ impl BrowserState {
     }
 
     pub fn enter_selected(&mut self) {
-        if let Some(path) = self.entries.get(self.selected).cloned() {
-            if path.is_dir() {
-                self.current_dir = path;
-                self.entries = list_audio_and_dirs(&self.current_dir);
-                self.selected = 0;
-            }
+        if let Some(path) = self.entries.get(self.selected).cloned()
+            && path.is_dir()
+        {
+            self.navigate_to(path);
         }
     }
 
     pub fn go_up(&mut self) {
         if let Some(parent) = self.current_dir.parent().map(|p| p.to_path_buf()) {
-            self.current_dir = parent;
-            self.entries = list_audio_and_dirs(&self.current_dir);
-            self.selected = 0;
+            self.navigate_to(parent);
         }
+    }
+
+    fn navigate_to(&mut self, dir: PathBuf) {
+        self.current_dir = dir;
+        self.entries = list_audio_and_dirs(&self.current_dir);
+        self.selected = 0;
     }
 
     pub fn selected_path(&self) -> Option<&PathBuf> {
@@ -108,7 +112,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let home = dirs_home();
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let mut playlists = Playlist::load_all();
         if playlists.is_empty() {
             playlists.push(Playlist::new("Default"));
@@ -155,8 +159,7 @@ impl App {
             return (0..self.browser.entries.len()).collect();
         }
         self.browser.entries.iter().enumerate()
-            .filter(|(_, p)| p.file_name().and_then(|n| n.to_str())
-                .map(|n| n.to_lowercase().contains(&q)).unwrap_or(false))
+            .filter(|(_, p)| display_name(p).to_lowercase().contains(&q))
             .map(|(i, _)| i)
             .collect()
     }
@@ -224,7 +227,7 @@ impl App {
         if pl.selected > 0 && pl.tracks.len() > 1 {
             pl.tracks.swap(pl.selected - 1, pl.selected);
             pl.selected -= 1;
-            let _ = pl.save();
+            pl.save();
         }
     }
 
@@ -233,7 +236,7 @@ impl App {
         if !pl.tracks.is_empty() && pl.selected + 1 < pl.tracks.len() {
             pl.tracks.swap(pl.selected, pl.selected + 1);
             pl.selected += 1;
-            let _ = pl.save();
+            pl.save();
         }
     }
 
@@ -262,7 +265,7 @@ impl App {
         if self.play_elapsed.as_secs() >= 30
             && self.history_logged_for.as_ref() != Some(path)
         {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name = display_name(path);
             self.history.add(name, path.clone());
             self.history_logged_for = Some(path.clone());
         }
@@ -303,11 +306,12 @@ impl App {
                     self.set_status(format!("Already in {}", pname));
                     return;
                 }
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                self.current_playlist_mut().tracks.push(Track { name, path });
-                let pname = self.current_playlist().name.clone();
+                let name = display_name(&path);
+                let pl = self.current_playlist_mut();
+                pl.tracks.push(Track { name, path });
+                let pname = pl.name.clone();
+                pl.save();
                 self.set_status(format!("Added to {}", pname));
-                let _ = self.current_playlist().save();
             } else {
                 self.set_status("Not an audio file");
             }
@@ -319,14 +323,14 @@ impl App {
         if !pl.tracks.is_empty() && pl.selected < pl.tracks.len() {
             pl.tracks.remove(pl.selected);
             pl.selected = pl.selected.min(pl.tracks.len().saturating_sub(1));
-            let _ = pl.save();
+            pl.save();
         }
     }
 
     pub fn new_playlist(&mut self, name: &str) {
         self.playlists.push(Playlist::new(name));
         self.active_playlist = self.playlists.len() - 1;
-        let _ = self.current_playlist().save();
+        self.current_playlist().save();
     }
 
     pub fn next_playlist(&mut self) {
@@ -337,10 +341,10 @@ impl App {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join("Music/tui-fi")
     }
 
-    pub fn import_m3u(&mut self, path: &PathBuf) -> Option<usize> {
+    pub fn import_m3u(&mut self, path: &Path) -> Option<usize> {
         let pl = crate::m3u::import(path)?;
         let count = pl.tracks.len();
-        let _ = pl.save();
+        pl.save();
         self.playlists.push(pl);
         self.active_playlist = self.playlists.len() - 1;
         Some(count)
@@ -434,11 +438,11 @@ impl App {
     }
 
     pub fn tick_status(&mut self) {
-        if let Some(t) = self.status_msg_time {
-            if t.elapsed().as_secs() >= 2 {
-                self.status_msg.clear();
-                self.status_msg_time = None;
-            }
+        if let Some(t) = self.status_msg_time
+            && t.elapsed().as_secs() >= 2
+        {
+            self.status_msg.clear();
+            self.status_msg_time = None;
         }
     }
 
@@ -493,6 +497,3 @@ pub fn is_audio(path: &Path) -> bool {
     )
 }
 
-fn dirs_home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
-}

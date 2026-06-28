@@ -30,7 +30,7 @@ pub fn import(m3u_path: &Path) -> Option<Playlist> {
             continue;
         }
         if let Some(rest) = line.strip_prefix("#EXTINF:") {
-            let title = rest.splitn(2, ',').nth(1).unwrap_or("").trim().to_string();
+            let title = rest.split_once(',').map(|x| x.1).unwrap_or("").trim().to_string();
             pending_name = Some(title);
         } else if !line.starts_with('#') {
             let raw = PathBuf::from(line);

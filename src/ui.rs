@@ -9,6 +9,7 @@ use ratatui::{
 use crate::app::{self, App, Mode, Panel, RepeatMode, TagEditor};
 use crate::history::HistoryEntry;
 use crate::player::{Player, TrackInfo, fmt_duration};
+use crate::utils::display_name;
 
 pub fn draw(frame: &mut Frame, app: &App, player: &Player) {
     let area = frame.area();
@@ -52,11 +53,7 @@ fn draw_browser(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focused_panel == Panel::Browser;
     let searching = app.mode == Mode::Searching && focused;
 
-    let border_style = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let border_style = panel_border_style(focused);
 
     let title = if searching {
         format!(" Browser  /{}_ ", app.input_buffer)
@@ -100,14 +97,9 @@ fn draw_browser(frame: &mut Frame, app: &App, area: Rect) {
     state.select(filtered_pos);
 
     frame.render_stateful_widget(
-        List::new(items)
+        styled_list(List::new(items)
             .block(block)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("> "),
+        ),
         area,
         &mut state,
     );
@@ -116,11 +108,7 @@ fn draw_browser(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focused_panel == Panel::Playlist;
     let searching = app.mode == Mode::Searching && focused;
-    let border_style = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let border_style = panel_border_style(focused);
 
     let pl = app.current_playlist();
     let title = if searching {
@@ -157,14 +145,7 @@ fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
     state.select(filtered_pos);
 
     frame.render_stateful_widget(
-        List::new(items)
-            .block(block)
-            .highlight_style(
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .highlight_symbol("> "),
+        styled_list(List::new(items).block(block)),
         area,
         &mut state,
     );
@@ -177,7 +158,7 @@ fn draw_player_bar(frame: &mut Frame, app: &App, player: &Player, area: Rect) {
         _ => player
             .now_playing
             .as_ref()
-            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+            .map(|p| display_name(p))
             .unwrap_or_else(|| "—".to_string()),
     };
 
@@ -213,7 +194,7 @@ fn draw_player_bar(frame: &mut Frame, app: &App, player: &Player, area: Rect) {
                 })
                 .collect()
         } else {
-            std::iter::repeat(blocks[0]).take(5).collect()
+            std::iter::repeat_n(blocks[0], 5).collect()
         };
         format!(" {}", s)
     };
@@ -316,13 +297,12 @@ fn draw_history(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     frame.render_stateful_widget(
-        List::new(items)
+        styled_list(List::new(items)
             .block(Block::default()
                 .title(" Recently Played  [H/Esc] close  [Enter] play ")
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)))
-            .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
-            .highlight_symbol("> "),
+        ),
         popup,
         &mut state,
     );
@@ -370,4 +350,17 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+fn panel_border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn styled_list(list: List) -> List {
+    list.highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .highlight_symbol("> ")
 }

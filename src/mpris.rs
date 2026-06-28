@@ -5,6 +5,7 @@ use std::thread;
 use mpris_server::{Metadata, PlaybackStatus, Player, Time};
 
 use crate::player::Player as AudioPlayer;
+use crate::utils::display_name;
 
 pub enum Cmd {
     Play,
@@ -15,7 +16,7 @@ pub enum Cmd {
     Previous,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct State {
     title: String,
     artist: Option<String>,
@@ -23,6 +24,19 @@ struct State {
     length_us: Option<i64>,
     paused: bool,
     stopped: bool,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            artist: None,
+            album: None,
+            length_us: None,
+            paused: false,
+            stopped: true,
+        }
+    }
 }
 
 pub struct MprisHandle {
@@ -57,8 +71,7 @@ impl MprisHandle {
                     .track_info
                     .as_ref()
                     .and_then(|t| t.title.clone())
-                    .or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| display_name(path));
                 s.artist = player.track_info.as_ref().and_then(|t| t.artist.clone());
                 s.album = player.track_info.as_ref().and_then(|t| t.album.clone());
                 s.length_us = player.total_duration.map(|d| d.as_micros() as i64);
