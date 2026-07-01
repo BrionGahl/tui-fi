@@ -39,6 +39,14 @@ pub enum RepeatMode {
     One,
 }
 
+/// Where the currently playing track came from, so next/prev/repeat know
+/// which set of tracks to advance through.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NowPlaying {
+    Playlist(usize, usize),
+    Browser(PathBuf),
+}
+
 pub struct BrowserState {
     pub current_dir: PathBuf,
     pub entries: Vec<PathBuf>,
@@ -104,8 +112,8 @@ pub struct App {
     pub history_logged_for: Option<PathBuf>,
     /// Path that was playing on the previous tick (used to detect track changes).
     pub last_playing: Option<PathBuf>,
-    /// (playlist_index, track_index) of the currently playing track
-    pub playing_track: Option<(usize, usize)>,
+    /// Where the currently playing track came from, for next/prev/repeat.
+    pub playing_track: Option<NowPlaying>,
     /// Tick counter driving the visualizer animation (increments only while playing and not paused).
     pub viz_tick: u64,
 }
@@ -407,29 +415,64 @@ impl App {
     pub fn play_playlist_track(&mut self, pl_idx: usize, tr_idx: usize) -> Option<PathBuf> {
         let path = self.playlists.get(pl_idx)?.tracks.get(tr_idx)?.path.clone();
         self.playlists[pl_idx].selected = tr_idx;
-        self.playing_track = Some((pl_idx, tr_idx));
+        self.playing_track = Some(NowPlaying::Playlist(pl_idx, tr_idx));
         Some(path)
+    }
+
+    /// Records that a track played directly from the file browser (not a playlist).
+    pub fn play_browser_track(&mut self, path: PathBuf) {
+        self.playing_track = Some(NowPlaying::Browser(path));
     }
 
     /// Returns the path of the next/previous track to play, updating state.
     /// `dir`: 1 for next, -1 for previous.
     pub fn advance_track(&mut self, dir: i32) -> Option<PathBuf> {
-        let (pl_idx, tr_idx) = self.playing_track?;
-        let len = self.playlists.get(pl_idx)?.tracks.len();
-        if len == 0 { return None; }
-        let next = if self.repeat == RepeatMode::One {
-            tr_idx
-        } else if self.shuffle {
-            use rand::Rng;
-            rand::thread_rng().gen_range(0..len)
-        } else {
-            let candidate = tr_idx as i32 + dir;
-            if self.repeat == RepeatMode::Off && (candidate < 0 || candidate >= len as i32) {
-                return None;
+        match self.playing_track.clone()? {
+            NowPlaying::Playlist(pl_idx, tr_idx) => {
+                let len = self.playlists.get(pl_idx)?.tracks.len();
+                if len == 0 { return None; }
+                let next = if self.repeat == RepeatMode::One {
+                    tr_idx
+                } else if self.shuffle {
+                    use rand::Rng;
+                    rand::thread_rng().gen_range(0..len)
+                } else {
+                    let candidate = tr_idx as i32 + dir;
+                    if self.repeat == RepeatMode::Off && (candidate < 0 || candidate >= len as i32) {
+                        return None;
+                    }
+                    candidate.rem_euclid(len as i32) as usize
+                };
+                self.play_playlist_track(pl_idx, next)
             }
-            candidate.rem_euclid(len as i32) as usize
-        };
-        self.play_playlist_track(pl_idx, next)
+            NowPlaying::Browser(path) => {
+                if self.repeat == RepeatMode::One {
+                    return Some(path);
+                }
+                let dir_path = path.parent()?.to_path_buf();
+                let mut siblings: Vec<PathBuf> = list_audio_and_dirs(&dir_path)
+                    .into_iter()
+                    .filter(|p| is_audio(p))
+                    .collect();
+                siblings.sort();
+                let len = siblings.len();
+                if len == 0 { return None; }
+                let cur_idx = siblings.iter().position(|p| p == &path)?;
+                let next_idx = if self.shuffle {
+                    use rand::Rng;
+                    rand::thread_rng().gen_range(0..len)
+                } else {
+                    let candidate = cur_idx as i32 + dir;
+                    if self.repeat == RepeatMode::Off && (candidate < 0 || candidate >= len as i32) {
+                        return None;
+                    }
+                    candidate.rem_euclid(len as i32) as usize
+                };
+                let next_path = siblings[next_idx].clone();
+                self.playing_track = Some(NowPlaying::Browser(next_path.clone()));
+                Some(next_path)
+            }
+        }
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {

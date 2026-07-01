@@ -116,6 +116,7 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
             KeyCode::Enter => {
                 if let Some(entry) = app.history.entries.get(app.history_selected) {
                     let path = entry.path.clone();
+                    app.play_browser_track(path.clone());
                     player.play(path);
                     app.show_history = false;
                 }
@@ -208,6 +209,7 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                             if path.is_dir() {
                                 app.browser.enter_selected();
                             } else {
+                                app.play_browser_track(path.clone());
                                 player.play(path);
                             }
                         }
@@ -332,6 +334,7 @@ fn handle_browser_key(app: &mut App, player: &mut Player, key: KeyCode) {
                         None => app.set_status("Failed to import M3U"),
                     }
                 } else {
+                    app.play_browser_track(path.clone());
                     player.play(path);
                     app.status_msg.clear();
                 }
