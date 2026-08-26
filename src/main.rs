@@ -102,6 +102,23 @@ fn main() -> io::Result<()> {
 }
 
 fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifiers) {
+    if let Some(path) = app.delete_confirm.clone() {
+        match key {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                let was_playing = player.now_playing.as_ref() == Some(&path);
+                if app.confirm_delete_file().is_some() && was_playing {
+                    player.stop();
+                    app.playing_track = None;
+                }
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.cancel_delete();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.show_history {
         match key {
             KeyCode::Char('H') | KeyCode::Esc => app.show_history = false,
@@ -346,6 +363,9 @@ fn handle_browser_key(app: &mut App, player: &mut Player, key: KeyCode) {
         KeyCode::Char('a') => {
             app.add_selected_to_playlist();
         }
+        KeyCode::Char('D') => {
+            app.request_delete_selected();
+        }
         KeyCode::Char('e') => {
             if let Some(path) = app.browser.selected_path().cloned()
                 && crate::app::is_audio(&path)
@@ -379,6 +399,9 @@ fn handle_playlist_key(app: &mut App, player: &mut Player, key: KeyCode) {
         }
         KeyCode::Char('d') => {
             app.remove_selected_from_playlist();
+        }
+        KeyCode::Char('D') => {
+            app.request_delete_selected_playlist_track();
         }
         KeyCode::Char('e') => {
             let path = app.current_playlist().tracks.get(app.current_playlist().selected)

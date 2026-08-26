@@ -116,6 +116,8 @@ pub struct App {
     pub playing_track: Option<NowPlaying>,
     /// Tick counter driving the visualizer animation (increments only while playing and not paused).
     pub viz_tick: u64,
+    /// Path pending confirmation for permanent deletion from disk.
+    pub delete_confirm: Option<PathBuf>,
 }
 
 impl App {
@@ -147,6 +149,7 @@ impl App {
             last_playing: None,
             playing_track: None,
             viz_tick: 0,
+            delete_confirm: None,
         }
     }
 
@@ -332,6 +335,58 @@ impl App {
             pl.tracks.remove(pl.selected);
             pl.selected = pl.selected.min(pl.tracks.len().saturating_sub(1));
             pl.save();
+        }
+    }
+
+    /// Stage the browser's selected file for deletion; actual removal
+    /// happens after the user confirms via `confirm_delete_file`.
+    pub fn request_delete_selected(&mut self) {
+        if let Some(path) = self.browser.selected_path().cloned() {
+            if is_audio(&path) {
+                self.delete_confirm = Some(path);
+            } else {
+                self.set_status("Not an audio file");
+            }
+        }
+    }
+
+    /// Stage the current playlist's selected track's underlying file for deletion.
+    pub fn request_delete_selected_playlist_track(&mut self) {
+        if let Some(track) = self.current_playlist().tracks.get(self.current_playlist().selected) {
+            self.delete_confirm = Some(track.path.clone());
+        }
+    }
+
+    pub fn cancel_delete(&mut self) {
+        self.delete_confirm = None;
+    }
+
+    /// Permanently deletes the staged file from disk and removes it from every
+    /// playlist that references it. Returns the deleted path on success.
+    pub fn confirm_delete_file(&mut self) -> Option<PathBuf> {
+        let path = self.delete_confirm.take()?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                self.remove_track_from_all_playlists(&path);
+                self.browser.refresh();
+                self.set_status(format!("Deleted {}", display_name(&path)));
+                Some(path)
+            }
+            Err(e) => {
+                self.set_status(format!("Delete failed: {}", e));
+                None
+            }
+        }
+    }
+
+    fn remove_track_from_all_playlists(&mut self, path: &Path) {
+        for pl in &mut self.playlists {
+            let before = pl.tracks.len();
+            pl.tracks.retain(|t| t.path != path);
+            if pl.tracks.len() != before {
+                pl.selected = pl.selected.min(pl.tracks.len().saturating_sub(1));
+                pl.save();
+            }
         }
     }
 

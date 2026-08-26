@@ -47,6 +47,10 @@ pub fn draw(frame: &mut Frame, app: &App, player: &Player) {
     if app.show_history {
         draw_history(frame, app, area);
     }
+
+    if let Some(path) = &app.delete_confirm {
+        draw_delete_confirm(frame, path, area);
+    }
 }
 
 fn draw_browser(frame: &mut Frame, app: &App, area: Rect) {
@@ -231,7 +235,7 @@ fn draw_controls_bar(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else {
         Span::styled(
-            " [Tab] panel  [a] add  [d] del  [J/K] reorder  [e] edit tags  [X] export m3u  [Enter] play/open/import  [Space] pause  [s] stop  [+/-] vol  [[/]] prev/next song  [z] shuffle  [p] repeat  [/] search  [H] history  [y] download  [r] refresh  [n] new playlist  [</>] prev/next playlist  [q] quit",
+            " [Tab] panel  [a] add  [d] del  [D] delete file  [J/K] reorder  [e] edit tags  [X] export m3u  [Enter] play/open/import  [Space] pause  [s] stop  [+/-] vol  [[/]] prev/next song  [z] shuffle  [p] repeat  [/] search  [H] history  [y] download  [r] refresh  [n] new playlist  [</>] prev/next playlist  [q] quit",
             Style::default().fg(Color::DarkGray),
         )
     };
@@ -251,6 +255,26 @@ fn draw_naming_popup(frame: &mut Frame, app: &App, area: Rect) {
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Cyan)),
+            )
+            .style(Style::default().fg(Color::White)),
+        popup,
+    );
+}
+
+fn draw_delete_confirm(frame: &mut Frame, path: &std::path::Path, area: Rect) {
+    let popup = centered_rect(60, 5, area);
+    frame.render_widget(Clear, popup);
+    let text = format!(
+        " Delete '{}' from disk?\n This also removes it from every playlist.\n\n [y] yes   [n/Esc] cancel",
+        display_name(path)
+    );
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .title(" Confirm Delete ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Red)),
             )
             .style(Style::default().fg(Color::White)),
         popup,
