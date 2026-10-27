@@ -2,8 +2,18 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+/// File name for display, with the extension dropped for audio files.
 pub fn display_name(path: &Path) -> String {
-    path.file_name().unwrap_or_default().to_string_lossy().into_owned()
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    strip_audio_ext(&name).to_string()
+}
+
+/// Drops a trailing audio extension (".mp3", ".flac", ...) from a song name.
+pub fn strip_audio_ext(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((stem, _)) if !stem.is_empty() && crate::app::is_audio(Path::new(name)) => stem,
+        _ => name,
+    }
 }
 
 pub fn save<T: Serialize>(value: &T, path: &PathBuf) {

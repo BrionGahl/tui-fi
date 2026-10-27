@@ -6,12 +6,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
 
+use ratatui_image::{Resize, StatefulImage};
+
 use crate::app::{self, App, Mode, Panel, RepeatMode, TagEditor};
 use crate::history::HistoryEntry;
 use crate::player::{Player, TrackInfo, fmt_duration};
-use crate::utils::display_name;
+use crate::preview::Preview;
+use crate::utils::{display_name, strip_audio_ext};
 
-pub fn draw(frame: &mut Frame, app: &App, player: &Player) {
+pub fn draw(frame: &mut Frame, app: &App, player: &Player, preview: &mut Preview) {
     let area = frame.area();
 
     let rows = Layout::default()
@@ -25,10 +28,15 @@ pub fn draw(frame: &mut Frame, app: &App, player: &Player) {
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(10), Constraint::Percentage(90)])
         .split(rows[0]);
 
-    draw_browser(frame, app, cols[0]);
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(info_height(cols[0]))])
+        .split(cols[0]);
+    draw_browser(frame, app, left[0]);
+    draw_info(frame, app, preview, left[1]);
     draw_playlist(frame, app, cols[1]);
     draw_player_bar(frame, app, player, rows[1]);
     draw_controls_bar(frame, app, rows[2]);
@@ -50,6 +58,10 @@ pub fn draw(frame: &mut Frame, app: &App, player: &Player) {
 
     if let Some(path) = &app.delete_confirm {
         draw_delete_confirm(frame, path, area);
+    }
+
+    if app.show_help {
+        draw_help(frame, area);
     }
 }
 
@@ -76,7 +88,11 @@ fn draw_browser(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|&i| {
             let p = &app.browser.entries[i];
-            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            let name = if p.is_dir() {
+                p.file_name().unwrap_or_default().to_string_lossy().into_owned()
+            } else {
+                display_name(p)
+            };
             let (prefix, style) = if p.is_dir() {
                 (
                     "  ",
@@ -109,6 +125,57 @@ fn draw_browser(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Text rows under the cover: title, artist, album, length, playlists.
+const INFO_TEXT_ROWS: u16 = 5;
+
+/// Rows for a square cover filling the column width. Terminal cells are roughly twice
+/// as tall as wide, so a square is half as many rows as columns. Capped at a third of
+/// the column so the browser keeps most of the space.
+fn cover_rows(width: u16, column_height: u16) -> u16 {
+    (width.saturating_sub(2) / 2).min(column_height / 3)
+}
+
+fn info_height(column: Rect) -> u16 {
+    cover_rows(column.width, column.height) + INFO_TEXT_ROWS + 2
+}
+
+fn draw_info(frame: &mut Frame, app: &App, preview: &mut Preview, area: Rect) {
+    let block = Block::default()
+        .title(" Info ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // The art slot is always reserved so the text doesn't jump around between songs.
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(inner.height.saturating_sub(INFO_TEXT_ROWS)), Constraint::Min(0)])
+        .split(inner);
+    if let Some(image) = &mut preview.image {
+        frame.render_stateful_widget(StatefulImage::default().resize(Resize::Fit(None)), rows[0], image);
+    }
+
+    // The column is narrow, so values stand alone; a dim field name marks anything missing.
+    let info = preview.info.as_ref();
+    let playlists = preview.path.as_deref()
+        .map(|p| app.playlists_containing(p).join(", "))
+        .filter(|s| !s.is_empty());
+    let field = |v: Option<String>, name: &str, style: Style| match v {
+        Some(v) => Line::from(Span::styled(v, style)),
+        None => Line::from(Span::styled(name.to_string(), Style::default().fg(Color::DarkGray))),
+    };
+    let lines = vec![
+        field(info.and_then(|i| i.title.clone()), "no title",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        field(info.and_then(|i| i.artist.clone()), "no artist", Style::default().fg(Color::Yellow)),
+        field(info.and_then(|i| i.album.clone()), "no album", Style::default().fg(Color::Yellow)),
+        field(preview.duration.map(fmt_duration), "--:--", Style::default().fg(Color::White)),
+        field(playlists, "no playlists", Style::default().fg(Color::Cyan)),
+    ];
+    frame.render_widget(Paragraph::new(lines), rows[1]);
+}
+
 fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
     let focused = app.focused_panel == Panel::Playlist;
     let searching = app.mode == Mode::Searching && focused;
@@ -137,10 +204,15 @@ fn draw_playlist(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|&i| {
             let t = &pl.tracks[i];
-            ListItem::new(Line::from(Span::styled(
-                &t.name,
-                Style::default().fg(Color::Yellow),
-            )))
+            let line = if app.missing_tracks.contains(&t.path) {
+                Span::styled(
+                    format!("✗ {}", strip_audio_ext(&t.name)),
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT),
+                )
+            } else {
+                Span::styled(strip_audio_ext(&t.name), Style::default().fg(Color::Yellow))
+            };
+            ListItem::new(Line::from(line))
         })
         .collect();
 
@@ -234,10 +306,11 @@ fn draw_controls_bar(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Yellow),
         )
     } else {
-        Span::styled(
-            " [Tab] panel  [a] add  [d] del  [D] delete file  [J/K] reorder  [e] edit tags  [X] export m3u  [Enter] play/open/import  [Space] pause  [s] stop  [+/-] vol  [[/]] prev/next song  [z] shuffle  [p] repeat  [/] search  [H] history  [y] download  [r] refresh  [n] new playlist  [</>] prev/next playlist  [q] quit",
-            Style::default().fg(Color::DarkGray),
-        )
+        let hints = match app.focused_panel {
+            Panel::Browser => " [Enter] open/play  [a] add  [e] tags  [D] delete file  [Space] pause  [Tab] playlist  [?] help",
+            Panel::Playlist => " [Enter] play  [d] remove  [J/K] move  [e] tags  [X] export  [Space] pause  [Tab] browser  [?] help",
+        };
+        Span::styled(hints, Style::default().fg(Color::DarkGray))
     };
 
     frame.render_widget(
@@ -266,7 +339,7 @@ fn draw_delete_confirm(frame: &mut Frame, path: &std::path::Path, area: Rect) {
     frame.render_widget(Clear, popup);
     let text = format!(
         " Delete '{}' from disk?\n This also removes it from every playlist.\n\n [y] yes   [n/Esc] cancel",
-        display_name(path)
+        path.file_name().unwrap_or_default().to_string_lossy()
     );
     frame.render_widget(
         Paragraph::new(text)
@@ -286,7 +359,7 @@ fn draw_url_popup(frame: &mut Frame, app: &App, area: Rect) {
     let popup = centered_rect(70, 5, area);
     frame.render_widget(Clear, popup);
     let text = format!(
-        " YouTube URL:\n {}_\n\n  → saves to {}",
+        " YouTube or Spotify URL:\n {}_\n\n  → saves to {}",
         app.input_buffer,
         dir.display()
     );
@@ -311,7 +384,7 @@ fn draw_history(frame: &mut Frame, app: &App, area: Rect) {
         vec![ListItem::new(Span::styled(" No history yet", Style::default().fg(Color::DarkGray)))]
     } else {
         app.history.entries.iter().map(|e: &HistoryEntry| {
-            ListItem::new(Line::from(Span::styled(&e.name, Style::default().fg(Color::Yellow))))
+            ListItem::new(Line::from(Span::styled(strip_audio_ext(&e.name), Style::default().fg(Color::Yellow))))
         }).collect()
     };
 
@@ -365,6 +438,75 @@ fn draw_tag_editor(frame: &mut Frame, ed: &TagEditor, area: Rect) {
     frame.render_widget(
         Paragraph::new(all_lines)
             .block(Block::default().title(" Edit Tags ").borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))),
+        popup,
+    );
+}
+
+const HELP_SECTIONS: &[(&str, &[(&str, &str)])] = &[
+    ("Playback", &[
+        ("Space", "pause / resume"),
+        ("s", "stop"),
+        ("[ / ]", "previous / next song"),
+        ("+ / -", "volume up / down"),
+        ("z", "toggle shuffle"),
+        ("p", "cycle repeat"),
+    ]),
+    ("Browser", &[
+        ("Enter / l", "open folder, play file, import m3u"),
+        ("h / Bksp", "go up a folder"),
+        ("a", "add to playlist"),
+        ("e", "edit tags"),
+        ("D", "delete file from disk"),
+        ("r", "refresh"),
+    ]),
+    ("Playlist", &[
+        ("Enter", "play track"),
+        ("d", "remove from playlist"),
+        ("D", "delete file from disk"),
+        ("J / K", "move track down / up"),
+        ("e", "edit tags"),
+        ("X", "export as m3u"),
+        ("c", "remove missing files"),
+    ]),
+    ("General", &[
+        ("Tab", "switch panel"),
+        ("j / k", "move down / up"),
+        ("< / >", "previous / next playlist"),
+        ("n", "new playlist"),
+        ("/", "search"),
+        ("H", "history"),
+        ("y", "download from YouTube/Spotify"),
+        ("?", "toggle this help"),
+        ("q", "quit"),
+    ]),
+];
+
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let mut lines = Vec::new();
+    for (i, (section, binds)) in HELP_SECTIONS.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {}", section),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )));
+        for (key, desc) in binds.iter() {
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {:<11}", key), Style::default().fg(Color::Yellow)),
+                Span::styled(*desc, Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+
+    let popup = centered_rect(52, lines.len() as u16 + 2, area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default()
+                .title(" Keybinds  [?/Esc] close ")
+                .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan))),
         popup,
     );

@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::history::History;
 use crate::player::TrackInfo;
@@ -105,6 +106,9 @@ pub struct App {
     pub tag_editor: Option<TagEditor>,
     pub history: History,
     pub show_history: bool,
+    pub show_help: bool,
+    pub missing_tracks: HashSet<PathBuf>,
+    last_missing_check: Option<Instant>,
     pub history_selected: usize,
     /// Accumulated play time for the current track (resets on track change).
     pub play_elapsed: std::time::Duration,
@@ -122,13 +126,15 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let start_dir = Some(Self::music_dir()).filter(|d| d.is_dir())
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
         let mut playlists = Playlist::load_all();
         if playlists.is_empty() {
             playlists.push(Playlist::new("Default"));
         }
         Self {
-            browser: BrowserState::new(home),
+            browser: BrowserState::new(start_dir),
             playlists,
             active_playlist: 0,
             focused_panel: Panel::Browser,
@@ -143,6 +149,9 @@ impl App {
             tag_editor: None,
             history: History::load(),
             show_history: false,
+            show_help: false,
+            missing_tracks: HashSet::new(),
+            last_missing_check: None,
             history_selected: 0,
             play_elapsed: std::time::Duration::ZERO,
             history_logged_for: None,
@@ -151,6 +160,25 @@ impl App {
             viz_tick: 0,
             delete_confirm: None,
         }
+    }
+
+    /// The file highlighted in whichever panel has focus.
+    pub fn highlighted_track(&self) -> Option<PathBuf> {
+        match self.focused_panel {
+            Panel::Browser => self.browser.selected_path().cloned(),
+            Panel::Playlist => {
+                let pl = self.current_playlist();
+                pl.tracks.get(pl.selected).map(|t| t.path.clone())
+            }
+        }
+    }
+
+    /// Names of every playlist that contains `path`.
+    pub fn playlists_containing(&self, path: &Path) -> Vec<&str> {
+        self.playlists.iter()
+            .filter(|pl| pl.tracks.iter().any(|t| t.path == path))
+            .map(|pl| pl.name.as_str())
+            .collect()
     }
 
     pub fn current_playlist(&self) -> &Playlist {
@@ -400,8 +428,16 @@ impl App {
         self.active_playlist = (self.active_playlist + 1) % self.playlists.len();
     }
 
+    /// The OS music folder (~/Music on Linux/macOS, the Music library on Windows),
+    /// honoring XDG_MUSIC_DIR when it's set.
+    pub fn music_dir() -> PathBuf {
+        dirs::audio_dir().unwrap_or_else(|| {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join("Music")
+        })
+    }
+
     pub fn download_dir() -> PathBuf {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")).join("Music/tui-fi")
+        Self::music_dir().join("tui-fi")
     }
 
     pub fn import_m3u(&mut self, path: &Path) -> Option<usize> {
@@ -425,40 +461,61 @@ impl App {
     pub fn start_download(&mut self, url: &str) {
         let dir = Self::download_dir();
         let _ = std::fs::create_dir_all(&dir);
-        match std::process::Command::new("yt-dlp")
-            .args([
-                "-x",
-                "--audio-format", "mp3",
-                "--audio-quality", "0",
-                "-o", &format!("{}/%(title)s.%(ext)s", dir.display()),
-                url,
+        // Spotify audio is DRM-protected, so spotdl takes the tags and art from Spotify
+        // and downloads the matching audio from YouTube Music.
+        let (tool, args): (&str, Vec<String>) = if is_spotify_url(url) {
+            ("spotdl", vec![
+                "download".into(), url.into(),
+                "--format".into(), "mp3".into(),
+                "--bitrate".into(), "auto".into(),
+                "--overwrite".into(), "skip".into(),
+                "--output".into(), format!("{}/{{artists}} - {{title}}.{{output-ext}}", dir.display()),
             ])
+        } else {
+            ("yt-dlp", vec![
+                "-x".into(),
+                "--audio-format".into(), "mp3".into(),
+                "--audio-quality".into(), "0".into(),
+                "--embed-metadata".into(),
+                "--embed-thumbnail".into(),
+                "--convert-thumbnails".into(), "jpg".into(),
+                "-o".into(), format!("{}/%(title)s.%(ext)s", dir.display()),
+                url.into(),
+            ])
+        };
+        match std::process::Command::new(tool)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
         {
             Ok(child) => {
                 self.download_child = Some(child);
-                self.status_msg = "Downloading...".to_string(); // no expiry — stays until done
+                self.status_msg = format!("Downloading via {}...", tool); // no expiry — stays until done
             }
             Err(_) => {
-                self.set_status("Error: yt-dlp not found");
+                self.set_status(format!("Error: {} not found", tool));
             }
         }
     }
 
     pub fn poll_download(&mut self) {
-        let finished = if let Some(child) = &mut self.download_child {
-            matches!(child.try_wait(), Ok(Some(_)))
-        } else {
-            false
+        let status = match &mut self.download_child {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => status,
+                _ => return,
+            },
+            None => return,
         };
-        if finished {
-            self.download_child = None;
+        self.download_child = None;
+        if status.success() {
             self.set_status("Download complete");
-            if self.browser.current_dir == Self::download_dir() {
-                self.browser.refresh();
-            }
+        } else {
+            self.set_status("Download failed");
+        }
+        if self.browser.current_dir == Self::download_dir() {
+            self.browser.refresh();
         }
     }
 
@@ -480,29 +537,19 @@ impl App {
     }
 
     /// Returns the path of the next/previous track to play, updating state.
-    /// `dir`: 1 for next, -1 for previous.
+    /// `dir`: 1 for next, -1 for previous. Tracks whose files no longer exist are skipped.
     pub fn advance_track(&mut self, dir: i32) -> Option<PathBuf> {
         match self.playing_track.clone()? {
             NowPlaying::Playlist(pl_idx, tr_idx) => {
-                let len = self.playlists.get(pl_idx)?.tracks.len();
-                if len == 0 { return None; }
-                let next = if self.repeat == RepeatMode::One {
-                    tr_idx
-                } else if self.shuffle {
-                    use rand::Rng;
-                    rand::thread_rng().gen_range(0..len)
-                } else {
-                    let candidate = tr_idx as i32 + dir;
-                    if self.repeat == RepeatMode::Off && (candidate < 0 || candidate >= len as i32) {
-                        return None;
-                    }
-                    candidate.rem_euclid(len as i32) as usize
-                };
+                let tracks = &self.playlists.get(pl_idx)?.tracks;
+                let next = pick_next(tracks.len(), tr_idx, dir, self.repeat, self.shuffle, |i| {
+                    tracks[i].path.exists()
+                })?;
                 self.play_playlist_track(pl_idx, next)
             }
             NowPlaying::Browser(path) => {
                 if self.repeat == RepeatMode::One {
-                    return Some(path);
+                    return Some(path).filter(|p| p.exists());
                 }
                 let dir_path = path.parent()?.to_path_buf();
                 let mut siblings: Vec<PathBuf> = list_audio_and_dirs(&dir_path)
@@ -510,24 +557,42 @@ impl App {
                     .filter(|p| is_audio(p))
                     .collect();
                 siblings.sort();
-                let len = siblings.len();
-                if len == 0 { return None; }
                 let cur_idx = siblings.iter().position(|p| p == &path)?;
-                let next_idx = if self.shuffle {
-                    use rand::Rng;
-                    rand::thread_rng().gen_range(0..len)
-                } else {
-                    let candidate = cur_idx as i32 + dir;
-                    if self.repeat == RepeatMode::Off && (candidate < 0 || candidate >= len as i32) {
-                        return None;
-                    }
-                    candidate.rem_euclid(len as i32) as usize
-                };
+                let next_idx = pick_next(siblings.len(), cur_idx, dir, self.repeat, self.shuffle, |i| {
+                    siblings[i].exists()
+                })?;
                 let next_path = siblings[next_idx].clone();
                 self.playing_track = Some(NowPlaying::Browser(next_path.clone()));
                 Some(next_path)
             }
         }
+    }
+
+    /// Re-scan playlists for tracks whose files were deleted outside the app.
+    pub fn tick_missing(&mut self) {
+        if self.last_missing_check.is_some_and(|t| t.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.last_missing_check = Some(Instant::now());
+        self.missing_tracks = self.playlists.iter()
+            .flat_map(|pl| &pl.tracks)
+            .filter(|t| !t.path.exists())
+            .map(|t| t.path.clone())
+            .collect();
+    }
+
+    /// Drop tracks whose files no longer exist from the current playlist.
+    pub fn prune_missing(&mut self) -> usize {
+        let pl = self.current_playlist_mut();
+        let before = pl.tracks.len();
+        pl.tracks.retain(|t| t.path.exists());
+        let removed = before - pl.tracks.len();
+        if removed > 0 {
+            pl.selected = pl.selected.min(pl.tracks.len().saturating_sub(1));
+            pl.save();
+        }
+        self.last_missing_check = None;
+        removed
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -588,6 +653,10 @@ pub fn is_m3u(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn is_spotify_url(url: &str) -> bool {
+    url.contains("open.spotify.com/") || url.starts_with("spotify:")
+}
+
 pub fn is_audio(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref(),
@@ -595,3 +664,66 @@ pub fn is_audio(path: &Path) -> bool {
     )
 }
 
+/// Picks the next index to play, skipping entries where `playable` is false.
+/// Tries each candidate at most once, so it can't loop forever when nothing is playable.
+fn pick_next(
+    len: usize,
+    cur: usize,
+    dir: i32,
+    repeat: RepeatMode,
+    shuffle: bool,
+    playable: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    if repeat == RepeatMode::One {
+        return Some(cur).filter(|&i| playable(i));
+    }
+    if shuffle {
+        use rand::seq::SliceRandom;
+        let live: Vec<usize> = (0..len).filter(|&i| playable(i)).collect();
+        return live.choose(&mut rand::thread_rng()).copied();
+    }
+    (1..=len as i32)
+        .map(|step| cur as i32 + dir * step)
+        .take_while(|&c| repeat != RepeatMode::Off || (0..len as i32).contains(&c))
+        .map(|c| c.rem_euclid(len as i32) as usize)
+        .find(|&i| playable(i))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RepeatMode, pick_next};
+
+    #[test]
+    fn skips_missing_tracks() {
+        let live = |i: usize| i != 1 && i != 2;
+        assert_eq!(pick_next(4, 0, 1, RepeatMode::Off, false, live), Some(3));
+        assert_eq!(pick_next(4, 3, -1, RepeatMode::Off, false, live), Some(0));
+    }
+
+    #[test]
+    fn stops_at_end_without_repeat() {
+        assert_eq!(pick_next(3, 1, 1, RepeatMode::Off, false, |i| i != 2), None);
+    }
+
+    #[test]
+    fn wraps_with_repeat_all() {
+        assert_eq!(pick_next(3, 1, 1, RepeatMode::All, false, |i| i != 2), Some(0));
+    }
+
+    #[test]
+    fn gives_up_when_nothing_playable() {
+        assert_eq!(pick_next(5, 0, 1, RepeatMode::All, false, |_| false), None);
+        assert_eq!(pick_next(5, 0, 1, RepeatMode::All, true, |_| false), None);
+        assert_eq!(pick_next(5, 2, 1, RepeatMode::One, false, |_| false), None);
+    }
+
+    #[test]
+    fn shuffle_only_picks_playable() {
+        for _ in 0..50 {
+            assert_eq!(pick_next(5, 0, 1, RepeatMode::Off, true, |i| i == 3), Some(3));
+        }
+    }
+}

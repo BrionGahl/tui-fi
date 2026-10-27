@@ -4,6 +4,7 @@ mod history;
 mod m3u;
 mod mpris;
 mod player;
+mod preview;
 mod playlist;
 mod ui;
 mod utils;
@@ -30,6 +31,7 @@ fn main() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
+    let mut preview = preview::Preview::new();
     let mut app = App::new();
     let cfg = config::Config::load();
     let mut player = Player::new(cfg.volume).expect("Failed to init audio");
@@ -41,7 +43,8 @@ fn main() -> io::Result<()> {
     let mut last_mpris_paused = false;
 
     loop {
-        terminal.draw(|f| ui::draw(f, &app, &player))?;
+        preview.sync(app.highlighted_track().as_deref());
+        terminal.draw(|f| ui::draw(f, &app, &player, &mut preview))?;
 
         if event::poll(Duration::from_millis(100))?
             && let Event::Key(key) = event::read()?
@@ -59,10 +62,11 @@ fn main() -> io::Result<()> {
             app.viz_tick = app.viz_tick.wrapping_add(delta.as_millis() as u64);
         }
 
+        app.tick_missing();
+
         if player.now_playing.is_some() && player.is_finished() {
-            if let Some(path) = app.advance_track(1) {
-                player.play(path);
-            } else {
+            let next = app.advance_track(1);
+            if !next.is_some_and(|path| play(&mut app, &mut player, path)) {
                 player.stop();
             }
         }
@@ -75,8 +79,8 @@ fn main() -> io::Result<()> {
                     mpris::Cmd::Pause => { if !player.paused && player.now_playing.is_some() { player.toggle_pause(); } }
                     mpris::Cmd::Toggle => player.toggle_pause(),
                     mpris::Cmd::Stop => player.stop(),
-                    mpris::Cmd::Next => { if let Some(path) = app.advance_track(1) { player.play(path); } }
-                    mpris::Cmd::Previous => { if let Some(path) = app.advance_track(-1) { player.play(path); } }
+                    mpris::Cmd::Next => { if let Some(path) = app.advance_track(1) { play(&mut app, &mut player, path); } }
+                    mpris::Cmd::Previous => { if let Some(path) = app.advance_track(-1) { play(&mut app, &mut player, path); } }
                 }
             }
             // Push state to MPRIS whenever track or pause state changes.
@@ -101,6 +105,16 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+/// Starts playback, reporting files that were deleted or can't be decoded.
+fn play(app: &mut App, player: &mut Player, path: PathBuf) -> bool {
+    let ok = player.play(path.clone());
+    if !ok {
+        let reason = if path.exists() { "Can't play" } else { "File not found" };
+        app.set_status(format!("{}: {}", reason, utils::display_name(&path)));
+    }
+    ok
+}
+
 fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifiers) {
     if let Some(path) = app.delete_confirm.clone() {
         match key {
@@ -115,6 +129,13 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                 app.cancel_delete();
             }
             _ => {}
+        }
+        return;
+    }
+
+    if app.show_help {
+        if matches!(key, KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')) {
+            app.show_help = false;
         }
         return;
     }
@@ -134,7 +155,7 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                 if let Some(entry) = app.history.entries.get(app.history_selected) {
                     let path = entry.path.clone();
                     app.play_browser_track(path.clone());
-                    player.play(path);
+                    play(app, player, path);
                     app.show_history = false;
                 }
             }
@@ -227,7 +248,7 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                                 app.browser.enter_selected();
                             } else {
                                 app.play_browser_track(path.clone());
-                                player.play(path);
+                                play(app, player, path);
                             }
                         }
                     }
@@ -235,7 +256,7 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                         let pl_idx = app.active_playlist;
                         let tr_idx = app.current_playlist().selected;
                         if let Some(path) = app.play_playlist_track(pl_idx, tr_idx) {
-                            player.play(path);
+                            play(app, player, path);
                         }
                     }
                 }
@@ -306,6 +327,7 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
                 app.browser.refresh();
                 app.set_status("Refreshed");
             }
+            KeyCode::Char('?') => app.show_help = true,
             KeyCode::Char('H') => {
                 app.show_history = true;
                 app.history_selected = 0;
@@ -313,10 +335,10 @@ fn handle_key(app: &mut App, player: &mut Player, key: KeyCode, _mods: KeyModifi
             KeyCode::Char('z') => app.toggle_shuffle(),
             KeyCode::Char('p') => app.toggle_repeat(),
             KeyCode::Char(']') => {
-                if let Some(path) = app.advance_track(1) { player.play(path); }
+                if let Some(path) = app.advance_track(1) { play(app, player, path); }
             }
             KeyCode::Char('[') => {
-                if let Some(path) = app.advance_track(-1) { player.play(path); }
+                if let Some(path) = app.advance_track(-1) { play(app, player, path); }
             }
             _ => match app.focused_panel {
                 Panel::Browser => handle_browser_key(app, player, key),
@@ -352,7 +374,7 @@ fn handle_browser_key(app: &mut App, player: &mut Player, key: KeyCode) {
                     }
                 } else {
                     app.play_browser_track(path.clone());
-                    player.play(path);
+                    play(app, player, path);
                     app.status_msg.clear();
                 }
             }
@@ -387,9 +409,13 @@ fn handle_playlist_key(app: &mut App, player: &mut Player, key: KeyCode) {
             let pl_idx = app.active_playlist;
             let tr_idx = app.current_playlist().selected;
             if let Some(path) = app.play_playlist_track(pl_idx, tr_idx) {
-                player.play(path);
+                play(app, player, path);
                 app.status_msg.clear();
             }
+        }
+        KeyCode::Char('c') => {
+            let n = app.prune_missing();
+            app.set_status(format!("Removed {} missing track{}", n, if n == 1 { "" } else { "s" }));
         }
         KeyCode::Char('X') => {
             match app.export_m3u() {

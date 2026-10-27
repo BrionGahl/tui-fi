@@ -15,4 +15,5 @@ rand = "0.8"
 lofty = "0.22"
 mpris-server = "0.8"
 tokio = { version = "1", features = ["rt", "sync"] }
-
+ratatui-image = "8.1.1"
+image = "0.25"

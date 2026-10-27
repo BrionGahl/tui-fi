@@ -31,13 +31,14 @@ impl Player {
         Some(Self { _stream: stream, handle, sink: None, now_playing: None, track_info: None, paused: false, total_duration: None, volume })
     }
 
-    pub fn play(&mut self, path: PathBuf) {
-        if let Some(sink) = self.sink.take() {
-            sink.stop();
+    /// Returns false if the file can't be opened or decoded; current playback is left untouched.
+    pub fn play(&mut self, path: PathBuf) -> bool {
+        let Ok(file) = File::open(&path) else { return false };
+        let Ok(source) = Decoder::new(BufReader::new(file)) else { return false };
+        let Ok(sink) = Sink::try_new(&self.handle) else { return false };
+        if let Some(old) = self.sink.take() {
+            old.stop();
         }
-        let Ok(file) = File::open(&path) else { return };
-        let Ok(source) = Decoder::new(BufReader::new(file)) else { return };
-        let Ok(sink) = Sink::try_new(&self.handle) else { return };
         sink.set_volume(self.volume);
         self.total_duration = source.total_duration();
         sink.append(source);
@@ -45,6 +46,7 @@ impl Player {
         self.now_playing = Some(path);
         self.paused = false;
         self.sink = Some(sink);
+        true
     }
 
     pub fn toggle_pause(&mut self) {

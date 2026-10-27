@@ -5,7 +5,7 @@ use crate::playlist::{Playlist, Track};
 pub fn export(playlist: &Playlist, m3u_path: &Path) -> std::io::Result<()> {
     let dir = m3u_path.parent().unwrap_or(Path::new("."));
     let mut lines = vec!["#EXTM3U".to_string()];
-    for track in &playlist.tracks {
+    for track in playlist.tracks.iter().filter(|t| t.path.exists()) {
         let path_str = match track.path.strip_prefix(dir) {
             Ok(rel) => rel.to_string_lossy().to_string(),
             Err(_) => track.path.to_string_lossy().to_string(),
